@@ -1,0 +1,18 @@
+┌────────────────┐     ┌───────────────┐     ┌───────────────┐
+│ Event         │     │ Token        │     │ Self-Attention│
+│ Representation│────▶│ Embedding    │────▶│ Layers       │
+│ (Voxel Grid)  │     │ Network      │     │              │
+└────────────────┘     └───────────────┘     └───────┬───────┘
+                                                    │
+                                                    ▼
+┌────────────────┐     ┌───────────────┐     ┌───────────────┐
+│ Segmentation   │     │ Upsampling    │     │ Token         │
+│ Output         │◀────│ Layers        │◀────│ Transition    │
+│                │     │               │     │ Module        │
+└────────────────┘     └───────────────┘     └───────────────┘
+
+Token Transition Mathematical Formulation:
+H^(s) = ∏(i=s to n) [α_i P^(i) + (1 - α_i)I]
+
+Training Objective:
+L = ∑(s∈S) γs Ls,  Ls = ||H^(s) × (X_M^(s) - X_E^(s))||₁ 

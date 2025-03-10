@@ -1,0 +1,52 @@
+# Model Configuration
+
+# Data Settings
+data:
+  dataset: 'MVSEC'
+  data_path: './data/mvsec'  # This should be the absolute path if needed
+  batch_size: 8  # Reduced batch size for initial testing
+  num_workers: 4
+  event_representation: 'voxel_grid'
+  time_bins: 10
+  shuffle: true
+  validation_split: 0.2
+
+# Model Settings
+model:
+  # Token embedding dimensions for each layer
+  embedding_dims: [64, 128, 256, 512]
+  # Alpha values for token transition (as mentioned in the paper)
+  alpha_values: [0.5, 0.5, 0.5, 0.5]  # Default, will be approximated by beta=0.5
+  # Token transition weights as noted in paper (γᵢ values)
+  layer_weights: [0.1, 0.4, 0.7, 1.0]
+  # Layers to regularize {0, 3, 6, 9, 12}
+  regularized_layers: [0, 3, 6, 9, 12]
+  # Number of attention heads per layer
+  num_heads: [2, 4, 8, 16]
+  # Dropout rate
+  dropout: 0.1
+  # Use residual connections
+  use_residual: true
+
+# Training Settings
+training:
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  lr_scheduler: 'cosine'
+  warmup_epochs: 5
+  # Use Azure OpenAI GPT-4o
+  use_gpt4o: false
+  # Azure OpenAI settings (only if use_gpt4o is true)
+  azure_openai:
+    api_key: ''  # Fill in with your key
+    endpoint: ''  # Fill in with your endpoint
+    deployment_name: 'gpt-4o'
+  
+# Logging and Checkpoints
+logging:
+  save_dir: './checkpoints'
+  log_interval: 10
+  eval_interval: 1
+  save_interval: 5
+  tensorboard: true 
