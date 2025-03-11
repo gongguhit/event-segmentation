@@ -78,10 +78,12 @@ conda-env/
 .history/
 
 # Project specific
-data/mvsec/
-dataset_check/
+data/mvsec/*
+!data/mvsec/README.md
 checkpoints/
 results/
+dataset_check/
+logs/
 *.pth
 *.h5
 *.hdf5
@@ -109,4 +111,7 @@ Thumbs.db
 # Temporary files
 *.swp
 *.swo
-*~ 
+*~
+
+# API Keys and Sensitive Information
+config/api_keys.yaml 

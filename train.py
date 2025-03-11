@@ -15,6 +15,7 @@ from models.event_segmentation_model import get_model
 from utils.logger import setup_logger
 from utils.metrics import compute_metrics
 from utils.device_utils import get_device, to_device, mps_fix_for_training
+from utils.api_utils import load_api_keys, create_empty_api_keys_file
 
 # Optional GPT-4 integration
 try:
@@ -197,6 +198,11 @@ def gpt4_analysis(model, config, val_loss, metrics, epoch):
     if not OPENAI_AVAILABLE or not config['training']['use_gpt4o']:
         return None
     
+    # Check if API keys are available
+    if not config['training']['azure_openai']['api_key'] or config['training']['azure_openai']['api_key'] == "your-azure-openai-api-key":
+        print("Warning: Azure OpenAI API key not set. GPT-4o analysis skipped.")
+        return None
+    
     # Setup Azure OpenAI client
     client = openai.AzureOpenAI(
         api_key=config['training']['azure_openai']['api_key'],
@@ -255,6 +261,13 @@ def main():
     # Load configuration
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+    
+    # Load API keys securely (outside of git tracking)
+    config = load_api_keys(config)
+    
+    # Create API keys file with placeholders if it doesn't exist
+    if config['training']['use_gpt4o'] and 'api_key' in config['training']['azure_openai'] and config['training']['azure_openai']['api_key'] == "your-azure-openai-api-key":
+        create_empty_api_keys_file()
     
     # Override data path if provided
     if args.data_path:
