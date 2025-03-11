@@ -15,6 +15,8 @@ def parse_args():
                         help='Path to dataset (overrides config)')
     parser.add_argument('--cpu', action='store_true',
                         help='Force using CPU even if MPS/CUDA is available')
+    parser.add_argument('--lite', action='store_true',
+                        help='Use lightweight training with reduced dataset and model size')
     
     # Train-specific arguments
     parser.add_argument('--resume', type=str, default=None,
@@ -34,7 +36,15 @@ def parse_args():
 
 def train(args):
     """Run the training script with the specified arguments."""
-    cmd = [sys.executable, 'train.py',
+    # Use the lite training script if --lite flag is specified
+    if args.lite:
+        script = 'train_lite.py'
+        if args.config == 'config/default.yaml':
+            args.config = 'config/lite.yaml'
+    else:
+        script = 'train.py'
+    
+    cmd = [sys.executable, script,
            '--config', args.config]
     
     if args.data_path:

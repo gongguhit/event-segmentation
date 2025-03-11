@@ -14,7 +14,8 @@ class MVSECDataset(Dataset):
     """
     
     def __init__(self, root_dir, split='train', time_bins=10, 
-                 event_representation='voxel_grid', transform=None):
+                 event_representation='voxel_grid', transform=None, sequences=None,
+                 downsample_factor=1):
         """
         Args:
             root_dir (str): Directory with the MVSEC data.
@@ -22,12 +23,16 @@ class MVSECDataset(Dataset):
             time_bins (int): Number of time bins for event representation
             event_representation (str): Type of event representation ('voxel_grid', 'event_frame', etc.)
             transform (callable, optional): Optional transform to be applied on a sample.
+            sequences (list, optional): List of sequence names to use. If None, all sequences are used.
+            downsample_factor (int, optional): Factor by which to downsample images. Default is 1 (no downsampling).
         """
         self.root_dir = root_dir
         self.split = split
         self.time_bins = time_bins
         self.event_representation = event_representation
         self.transform = transform
+        self.filter_sequences = sequences
+        self.downsample_factor = downsample_factor
         
         # Load dataset metadata
         self.sequences = self._get_sequences()
@@ -40,7 +45,9 @@ class MVSECDataset(Dataset):
             seq_path = os.path.join(self.root_dir, seq)
             # Accept both outdoor and indoor sequences but skip the calibration directories
             if os.path.isdir(seq_path) and 'calib' not in seq:
-                sequences.append(seq)
+                # Filter sequences if specified
+                if self.filter_sequences is None or seq in self.filter_sequences:
+                    sequences.append(seq)
         return sequences
     
     def _prepare_samples(self):
@@ -184,18 +191,16 @@ class MVSECDataset(Dataset):
         """
         Get a sample from the dataset.
         
+        Args:
+            idx (int): Index of the sample to get
+            
         Returns:
-            A dictionary containing:
-                - events: Tensor of events representation (voxel grid)
-                - image: Corresponding image (for supervision)
-                - segmentation: Segmentation ground truth (if available)
+            Dictionary containing events, image, and segmentation
         """
         sample_info = self.samples[idx]
         data_file = sample_info['data_file']
-        gt_file = sample_info['gt_file']
         img_idx = sample_info['img_idx']
-        current_ts = sample_info['img_timestamp']
-        prev_ts = sample_info['prev_img_timestamp']
+        prev_img_idx = max(0, img_idx - 1)
         
         with h5py.File(data_file, 'r') as f:
             # Get events between previous and current image
@@ -204,6 +209,11 @@ class MVSECDataset(Dataset):
             # Extract events that occurred between the two image timestamps
             # In MVSEC, events are stored as a Nx4 dataset with columns: x, y, timestamp, polarity
             all_events = events_data[:]  # This reads the entire events array
+            
+            # Get timestamps for the current and previous images
+            image_timestamps = f['davis/left/image_raw_ts'][:]
+            current_ts = image_timestamps[img_idx]
+            prev_ts = image_timestamps[prev_img_idx]
             
             # Filter events by timestamp
             event_indices = np.where((all_events[:, 2] >= prev_ts) & 
@@ -219,54 +229,55 @@ class MVSECDataset(Dataset):
             image_data = f['davis/left/image_raw']
             image = image_data[img_idx]
             
-            # Get image dimensions
-            height, width = image.shape[:2]
-
-            # Create event representation
-            events_tensor = torch.from_numpy(events).float()
-            if self.event_representation == 'voxel_grid':
-                event_repr = self._events_to_voxel_grid(events_tensor, self.time_bins, width, height)
-            else:
-                # Default to event frame if representation not supported
-                pos_events = events[events[:, 3] > 0]
-                neg_events = events[events[:, 3] < 0]
+            # Apply downsampling if needed
+            if self.downsample_factor > 1:
+                # Downsample image
+                h, w = image.shape
+                new_h, new_w = h // self.downsample_factor, w // self.downsample_factor
+                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
                 
-                pos_frame = np.zeros((height, width), dtype=np.float32)
-                neg_frame = np.zeros((height, width), dtype=np.float32)
-                
-                for e in pos_events:
-                    x, y = int(e[0]), int(e[1])
-                    if 0 <= x < width and 0 <= y < height:
-                        pos_frame[y, x] += 1
-                
-                for e in neg_events:
-                    x, y = int(e[0]), int(e[1])
-                    if 0 <= x < width and 0 <= y < height:
-                        neg_frame[y, x] += 1
-                
-                # Normalize
-                if pos_frame.max() > 0:
-                    pos_frame = pos_frame / pos_frame.max()
-                if neg_frame.max() > 0:
-                    neg_frame = neg_frame / neg_frame.max()
-                
-                event_repr = torch.from_numpy(np.stack([pos_frame, neg_frame], axis=0))
+                # Downsample events by scaling coordinates
+                events[:, 0] = events[:, 0] / self.downsample_factor
+                events[:, 1] = events[:, 1] / self.downsample_factor
+                events[:, 0] = np.clip(events[:, 0], 0, new_w - 1)
+                events[:, 1] = np.clip(events[:, 1], 0, new_h - 1)
             
-            # Convert image to tensor
-            image_tensor = torch.from_numpy(image).float() / 255.0
-            
-            # Create a dummy segmentation (actual ground truth format would need specific parsing)
+            # Create dummy segmentation (for now)
             segmentation = self._create_dummy_segmentation(image)
             
+            # Convert events to voxel grid or other representation
+            if self.event_representation == 'voxel_grid':
+                # Convert events to torch tensor
+                events_tensor = torch.from_numpy(events).float()
+                # Create voxel grid
+                height, width = image.shape
+                voxel_grid = self._events_to_voxel_grid(events_tensor, self.time_bins, width, height)
+            else:
+                # Other event representations can be added here
+                raise NotImplementedError(f"Event representation '{self.event_representation}' not implemented")
+            
+            # Convert to torch tensors
+            image_tensor = torch.from_numpy(image).float() / 255.0
+            
+            # Check if segmentation is already a tensor
+            if isinstance(segmentation, torch.Tensor):
+                segmentation_tensor = segmentation.long()
+            else:
+                segmentation_tensor = torch.from_numpy(segmentation).long()
+            
+            # Add channel dimension for image
+            image_tensor = image_tensor.unsqueeze(0)
+            
+            # Apply any additional transforms
+            if self.transform:
+                image_tensor = self.transform(image_tensor)
+            
             sample = {
-                'events': event_repr,
-                'image': image_tensor.unsqueeze(0) if image_tensor.ndim == 2 else image_tensor,  # Add channel dimension if needed
-                'segmentation': segmentation
+                'events': voxel_grid,
+                'image': image_tensor,
+                'segmentation': segmentation_tensor
             }
             
-            if self.transform:
-                sample = self.transform(sample)
-                
             return sample
 
 def get_mvsec_dataloaders(config):
@@ -285,19 +296,29 @@ def get_mvsec_dataloaders(config):
     time_bins = config['data']['time_bins']
     event_representation = config['data']['event_representation']
     
+    # Get sequences filter if specified
+    sequences = config['data'].get('sequences', None)
+    
+    # Get downsample factor if specified
+    downsample_factor = config['data'].get('downsample_factor', 1)
+    
     # Create datasets
     train_dataset = MVSECDataset(
         root_dir=root_dir,
         split='train',
         time_bins=time_bins,
-        event_representation=event_representation
+        event_representation=event_representation,
+        sequences=sequences,
+        downsample_factor=downsample_factor
     )
     
     val_dataset = MVSECDataset(
         root_dir=root_dir,
         split='val',
         time_bins=time_bins,
-        event_representation=event_representation
+        event_representation=event_representation,
+        sequences=sequences,
+        downsample_factor=downsample_factor
     )
     
     # Create dataloaders

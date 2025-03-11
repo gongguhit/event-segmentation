@@ -79,24 +79,39 @@ def compute_precision_recall(pred, target):
     
     return precision.item(), recall.item()
 
-def compute_metrics(pred, target):
+def compute_metrics(preds, targets):
     """
-    Compute all evaluation metrics.
+    Compute evaluation metrics for segmentation.
     
     Args:
-        pred: Predicted segmentation (B, C, H, W) tensor
-        target: Target segmentation (B, H, W) tensor
+        preds: Predicted segmentation masks (batch_size, height, width)
+        targets: Ground truth segmentation masks (batch_size, height, width)
         
     Returns:
         Dictionary of metrics
     """
-    iou = compute_iou(pred, target)
-    accuracy = compute_accuracy(pred, target)
-    precision, recall = compute_precision_recall(pred, target)
+    # Convert to binary masks if needed
+    if preds.dim() > 3:
+        preds = torch.argmax(preds, dim=1)
+    
+    # Compute intersection and union
+    intersection = torch.logical_and(preds, targets).sum().float()
+    union = torch.logical_or(preds, targets).sum().float()
+    
+    # Compute true positives, false positives, false negatives
+    tp = intersection
+    fp = (preds == 1).sum().float() - tp
+    fn = (targets == 1).sum().float() - tp
+    
+    # Compute metrics
+    iou = intersection / (union + 1e-6)
+    precision = tp / (tp + fp + 1e-6)
+    recall = tp / (tp + fn + 1e-6)
+    f1 = 2 * precision * recall / (precision + recall + 1e-6)
     
     return {
-        'iou': iou,
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall
+        'iou': iou.item(),
+        'precision': precision.item(),
+        'recall': recall.item(),
+        'f1': f1.item()
     } 

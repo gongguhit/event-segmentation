@@ -9,13 +9,13 @@ from tqdm import tqdm
 import numpy as np
 import time
 from pathlib import Path
+import torch.nn.functional as F
 
 from data.mvsec_dataset import get_mvsec_dataloaders
 from models.event_segmentation_model import get_model
 from utils.logger import setup_logger
 from utils.metrics import compute_metrics
 from utils.device_utils import get_device, to_device, mps_fix_for_training
-from utils.api_utils import load_api_keys, create_empty_api_keys_file
 
 # Optional GPT-4 integration
 try:
@@ -91,18 +91,33 @@ def train_epoch(model, train_loader, optimizer, device, epoch, config, logger, w
         # Forward pass
         outputs = model(events)
         
-        # Compute loss
-        loss_dict = model.compute_loss(outputs, targets, config)
-        loss = loss_dict['total_loss']
+        # Compute loss directly
+        logits = outputs['logits']
+        loss = F.cross_entropy(logits, targets)
         
         # Backward pass and optimize
-        loss.backward()
+        try:
+            loss.backward()
+        except RuntimeError as e:
+            print(f"Error during backward pass: {e}")
+            print(f"Event shape: {events.shape}")
+            print(f"Target shape: {targets.shape}")
+            print(f"Output keys: {outputs.keys()}")
+            for key, value in outputs.items():
+                if isinstance(value, torch.Tensor):
+                    print(f"Output {key} shape: {value.shape}, is_contiguous: {value.is_contiguous()}")
+                elif isinstance(value, list):
+                    print(f"Output {key} is a list of length {len(value)}")
+                    for i, item in enumerate(value):
+                        if isinstance(item, torch.Tensor):
+                            print(f"  Item {i} shape: {item.shape}, is_contiguous: {item.is_contiguous()}")
+            raise
         optimizer.step()
         
         # Update running losses
         running_loss += loss.item()
-        running_seg_loss += loss_dict['seg_loss'].item()
-        running_transition_loss += loss_dict['transition_loss'].item()
+        running_seg_loss += loss.item()
+        running_transition_loss += 0.0
         
         # Update progress bar
         pbar.set_postfix({
@@ -130,64 +145,96 @@ def train_epoch(model, train_loader, optimizer, device, epoch, config, logger, w
 
 def validate(model, val_loader, device, epoch, config, logger, writer):
     """
-    Validate the model.
+    Validate the model on the validation set.
+    
+    Args:
+        model: Model to validate
+        val_loader: Validation data loader
+        device: Device to use
+        epoch: Current epoch
+        config: Configuration dictionary
+        logger: Logger
+        writer: TensorBoard writer
+        
+    Returns:
+        Validation loss
     """
     model.eval()
-    running_loss = 0.0
-    running_seg_loss = 0.0
-    running_transition_loss = 0.0
+    val_loss = 0.0
+    val_seg_loss = 0.0
+    val_transition_loss = 0.0
     
-    # Initialize metrics
-    metrics = {'iou': 0.0, 'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0}
+    # Metrics
+    metrics = {
+        'iou': 0.0,
+        'precision': 0.0,
+        'recall': 0.0,
+        'f1': 0.0
+    }
+    
+    num_samples = 0
     
     with torch.no_grad():
-        for batch in tqdm(val_loader, desc="Validation"):
-            # Move data to device
-            batch = to_device(batch, device)
-            events = batch['events']
-            images = batch['image']
-            targets = batch['segmentation']
-            
-            # Forward pass
-            outputs = model(events)
-            
-            # Compute loss
-            loss_dict = model.compute_loss(outputs, targets, config)
-            
-            # Update running losses
-            running_loss += loss_dict['total_loss'].item()
-            running_seg_loss += loss_dict['seg_loss'].item()
-            running_transition_loss += loss_dict['transition_loss'].item()
-            
-            # Compute metrics
-            batch_metrics = compute_metrics(outputs['logits'], targets)
-            for k in metrics:
-                metrics[k] += batch_metrics[k]
+        with tqdm(val_loader, desc=f"Validation", leave=False) as pbar:
+            for i, (events, targets) in enumerate(pbar):
+                # Move data to device
+                events = events.to(device)
+                targets = targets.to(device)
+                
+                # Forward pass
+                outputs = model(events)
+                
+                # Compute loss directly
+                logits = outputs['logits']
+                loss = F.cross_entropy(logits, targets)
+                
+                # Update validation loss
+                val_loss += loss.item()
+                val_seg_loss += loss.item()
+                val_transition_loss += 0.0
+                
+                # Compute predictions
+                preds = torch.argmax(logits, dim=1)
+                
+                # Update metrics
+                batch_metrics = compute_metrics(preds, targets)
+                for k in metrics.keys():
+                    metrics[k] += batch_metrics[k] * events.size(0)
+                
+                num_samples += events.size(0)
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'val_loss': val_loss / (i + 1),
+                    'val_iou': metrics['iou'] / num_samples
+                })
+    
+    # Calculate validation losses
+    val_loss = val_loss / len(val_loader)
+    val_seg_loss = val_seg_loss / len(val_loader)
+    val_transition_loss = val_transition_loss / len(val_loader)
     
     # Calculate validation metrics
     for k in metrics:
-        metrics[k] /= len(val_loader)
-    
-    # Calculate validation losses
-    val_loss = running_loss / len(val_loader)
-    val_seg_loss = running_seg_loss / len(val_loader)
-    val_transition_loss = running_transition_loss / len(val_loader)
+        metrics[k] /= num_samples
     
     # Log metrics
     logger.info(f"Epoch {epoch} - Validation Loss: {val_loss:.4f}, "
                 f"Seg Loss: {val_seg_loss:.4f}, "
                 f"Transition Loss: {val_transition_loss:.4f}")
     logger.info(f"Metrics - IoU: {metrics['iou']:.4f}, "
-                f"Accuracy: {metrics['accuracy']:.4f}, "
                 f"Precision: {metrics['precision']:.4f}, "
-                f"Recall: {metrics['recall']:.4f}")
+                f"Recall: {metrics['recall']:.4f}, "
+                f"F1: {metrics['f1']:.4f}")
     
     # Write to tensorboard
     writer.add_scalar('val/total_loss', val_loss, epoch)
     writer.add_scalar('val/seg_loss', val_seg_loss, epoch)
     writer.add_scalar('val/transition_loss', val_transition_loss, epoch)
     writer.add_scalar('val/iou', metrics['iou'], epoch)
-    writer.add_scalar('val/accuracy', metrics['accuracy'], epoch)
+    writer.add_scalar('val/precision', metrics['precision'], epoch)
+    writer.add_scalar('val/recall', metrics['recall'], epoch)
+    writer.add_scalar('val/f1', metrics['f1'], epoch)
     
     return val_loss, metrics
 
@@ -196,11 +243,6 @@ def gpt4_analysis(model, config, val_loss, metrics, epoch):
     Use Azure OpenAI GPT-4o to analyze model performance and suggest improvements.
     """
     if not OPENAI_AVAILABLE or not config['training']['use_gpt4o']:
-        return None
-    
-    # Check if API keys are available
-    if not config['training']['azure_openai']['api_key'] or config['training']['azure_openai']['api_key'] == "your-azure-openai-api-key":
-        print("Warning: Azure OpenAI API key not set. GPT-4o analysis skipped.")
         return None
     
     # Setup Azure OpenAI client
@@ -216,9 +258,9 @@ def gpt4_analysis(model, config, val_loss, metrics, epoch):
     
     Validation Loss: {val_loss:.4f}
     IoU: {metrics['iou']:.4f}
-    Accuracy: {metrics['accuracy']:.4f}
     Precision: {metrics['precision']:.4f}
     Recall: {metrics['recall']:.4f}
+    F1: {metrics['f1']:.4f}
     
     Model configuration:
     - Embedding dimensions: {config['model']['embedding_dims']}
@@ -261,13 +303,6 @@ def main():
     # Load configuration
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-    
-    # Load API keys securely (outside of git tracking)
-    config = load_api_keys(config)
-    
-    # Create API keys file with placeholders if it doesn't exist
-    if config['training']['use_gpt4o'] and 'api_key' in config['training']['azure_openai'] and config['training']['azure_openai']['api_key'] == "your-azure-openai-api-key":
-        create_empty_api_keys_file()
     
     # Override data path if provided
     if args.data_path:

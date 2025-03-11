@@ -40,7 +40,7 @@ training:
   # Use main.py train --cpu to force CPU usage
   # Training will automatically use the best available hardware
   # Use Azure OpenAI GPT-4o
-  use_gpt4o: false
+  use_gpt4o: true
   # Azure OpenAI settings (only if use_gpt4o is true)
   azure_openai:
     api_key: ''  # Fill in with your key

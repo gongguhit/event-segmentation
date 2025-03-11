@@ -52,10 +52,10 @@ class TokenTransition(nn.Module):
             # For each layer: [α_i P^(i) + (1 - α_i)I]
             layer_transition = alpha * attn_matrix + (1 - alpha) * identity
             # Multiply with previous transitions: H^(s) = ∏(i=s to n) [α_i P^(i) + (1 - α_i)I]
-            transition_matrix = torch.bmm(transition_matrix, layer_transition)
+            transition_matrix = torch.bmm(transition_matrix.contiguous(), layer_transition.contiguous())
         
         # Apply the transition to the embeddings
-        transformed_embeddings = torch.bmm(transition_matrix, source_embeddings)
+        transformed_embeddings = torch.bmm(transition_matrix.contiguous(), source_embeddings.contiguous())
         
         return transformed_embeddings, transition_matrix
 
@@ -97,31 +97,21 @@ class MultiHeadSelfAttention(nn.Module):
         """
         batch_size, num_tokens, _ = x.shape
         
-        # Linear projections
-        q = self.q_proj(x).reshape(batch_size, num_tokens, self.num_heads, self.head_dim)
-        k = self.k_proj(x).reshape(batch_size, num_tokens, self.num_heads, self.head_dim)
-        v = self.v_proj(x).reshape(batch_size, num_tokens, self.num_heads, self.head_dim)
+        # Simple self-attention implementation without reshaping
+        # Project input to queries, keys, and values
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
         
-        # Transpose for attention computation
-        q = q.transpose(1, 2)  # (batch_size, num_heads, num_tokens, head_dim)
-        k = k.transpose(1, 2)  # (batch_size, num_heads, num_tokens, head_dim)
-        v = v.transpose(1, 2)  # (batch_size, num_heads, num_tokens, head_dim)
-        
-        # Compute scaled dot-product attention
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        attn_weights = F.softmax(scores, dim=-1)  # (batch_size, num_heads, num_tokens, num_tokens)
+        # Compute attention scores
+        scores = torch.bmm(q, k.transpose(1, 2)) / math.sqrt(self.embed_dim)
+        attn_weights = F.softmax(scores, dim=-1)
         
         # Apply attention to values
-        attn_output = torch.matmul(attn_weights, v)  # (batch_size, num_heads, num_tokens, head_dim)
+        output = torch.bmm(attn_weights, v)
+        output = self.out_proj(output)
         
-        # Reshape and project output
-        attn_output = attn_output.transpose(1, 2).reshape(batch_size, num_tokens, self.embed_dim)
-        output = self.out_proj(attn_output)
-        
-        # Average attention weights over heads for the transition matrix
-        attn_matrix = attn_weights.mean(dim=1)  # (batch_size, num_tokens, num_tokens)
-        
-        return output, attn_matrix
+        return output, attn_weights
 
 class SelfAttentionLayer(nn.Module):
     """
@@ -206,9 +196,10 @@ class TokenEmbedding(nn.Module):
         x = self.activation(self.conv2(x))
         x = self.activation(self.conv3(x))
         
-        # Reshape to (batch_size, embed_dim, num_tokens)
+        # Reshape to (batch_size, num_tokens, embed_dim) without using reshape
         batch_size, channels, height, width = x.shape
-        x = x.permute(0, 2, 3, 1).reshape(batch_size, height * width, channels)
+        x = x.flatten(2)  # (batch_size, channels, height*width)
+        x = x.transpose(1, 2)  # (batch_size, height*width, channels)
         
         # Apply layer normalization
         x = self.norm(x)

@@ -1,0 +1,52 @@
+# Lite Model Configuration for quick testing
+
+# Data Settings
+data:
+  dataset: 'MVSEC'
+  data_path: './data/mvsec'  # This should be the absolute path if needed
+  batch_size: 4  # Reduced batch size for faster training
+  num_workers: 4
+  event_representation: 'voxel_grid'
+  time_bins: 10
+  shuffle: true
+  validation_split: 0.2
+  # Only use outdoor_day1 sequence for faster training
+  sequences: ['outdoor_day1']
+  # Downsample images to speed up training
+  downsample_factor: 2  # Downsample by a factor of 2 (half the resolution)
+
+# Model Settings - Smaller model for faster training
+model:
+  # Reduced embedding dimensions
+  embedding_dims: [32, 64, 128, 256]
+  # Alpha values for token transition
+  alpha_values: [0.5, 0.5, 0.5, 0.5]
+  # Token transition weights
+  layer_weights: [0.1, 0.4, 0.7, 1.0]
+  # Reduced regularized layers
+  regularized_layers: [0, 3]
+  # Reduced number of attention heads
+  num_heads: [1, 2, 4, 8]
+  # Dropout rate
+  dropout: 0.1
+  # Use residual connections
+  use_residual: true
+
+# Training Settings - Fewer epochs for faster training
+training:
+  epochs: 10  # Reduced from 100 to 10
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  lr_scheduler: 'cosine'
+  warmup_epochs: 2  # Reduced from 5 to 2
+  # Hardware acceleration (auto-detected)
+  # Use Azure OpenAI GPT-4o
+  use_gpt4o: false  # Turned off for faster training
+  
+# Logging and Checkpoints
+logging:
+  save_dir: './checkpoints/lite'
+  log_interval: 5
+  eval_interval: 1
+  save_interval: 2
+  tensorboard: true 

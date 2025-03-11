@@ -1,21 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
-class EventSegmentationModel(nn.Module):
+class LiteEventSegmentationModel(nn.Module):
     """
-    Simplified event-based segmentation model with a convolutional architecture.
+    Lightweight event-based segmentation model optimized for fast training.
+    Uses a simple encoder-decoder architecture with fewer parameters.
     """
     
     def __init__(self, config):
         """
-        Initialize the event segmentation model.
+        Initialize the lite event segmentation model.
         
         Args:
             config: Model configuration
         """
-        super(EventSegmentationModel, self).__init__()
+        super(LiteEventSegmentationModel, self).__init__()
         
         # Extract configuration
         self.embedding_dims = config['model']['embedding_dims']
@@ -27,48 +27,38 @@ class EventSegmentationModel(nn.Module):
         # Number of output classes (change as needed for your segmentation task)
         self.num_classes = 2  # Binary segmentation by default
         
-        # Encoder
+        # Simplified encoder - fewer layers, fewer channels
         self.encoder = nn.Sequential(
-            # Layer 1
-            nn.Conv2d(self.input_channels, self.embedding_dims[0], kernel_size=3, stride=1, padding=1),
+            # Layer 1: 10 -> 32 channels
+            nn.Conv2d(self.input_channels, self.embedding_dims[0], kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(self.embedding_dims[0]),
             nn.ReLU(inplace=True),
             
-            # Layer 2
+            # Layer 2: 32 -> 64 channels
             nn.Conv2d(self.embedding_dims[0], self.embedding_dims[1], kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(self.embedding_dims[1]),
             nn.ReLU(inplace=True),
             
-            # Layer 3
+            # Layer 3: 64 -> 128 channels
             nn.Conv2d(self.embedding_dims[1], self.embedding_dims[2], kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(self.embedding_dims[2]),
             nn.ReLU(inplace=True),
-            
-            # Layer 4
-            nn.Conv2d(self.embedding_dims[2], self.embedding_dims[3], kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm2d(self.embedding_dims[3]),
-            nn.ReLU(inplace=True),
         )
         
-        # Decoder
+        # Simplified decoder - fewer layers, direct upsampling
         self.decoder = nn.Sequential(
-            # Layer 1
-            nn.ConvTranspose2d(self.embedding_dims[3], self.embedding_dims[2], kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(self.embedding_dims[2]),
-            nn.ReLU(inplace=True),
-            
-            # Layer 2
+            # Layer 1: 128 -> 64 channels
             nn.ConvTranspose2d(self.embedding_dims[2], self.embedding_dims[1], kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(self.embedding_dims[1]),
             nn.ReLU(inplace=True),
             
-            # Layer 3
+            # Layer 2: 64 -> 32 channels
             nn.ConvTranspose2d(self.embedding_dims[1], self.embedding_dims[0], kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(self.embedding_dims[0]),
             nn.ReLU(inplace=True),
             
-            # Output layer
-            nn.Conv2d(self.embedding_dims[0], self.num_classes, kernel_size=1)
+            # Output layer: 32 -> 2 channels (for binary segmentation)
+            nn.ConvTranspose2d(self.embedding_dims[0], self.num_classes, kernel_size=4, stride=2, padding=1),
         )
     
     def forward(self, x):
@@ -90,25 +80,22 @@ class EventSegmentationModel(nn.Module):
         # Decode
         logits = self.decoder(features)
         
-        # Ensure output size matches input size
+        # Ensure output size matches input size exactly
         if logits.shape[2] != height or logits.shape[3] != width:
             logits = F.interpolate(logits, size=(height, width), mode='bilinear', align_corners=False)
-        
-        # Store embeddings for compatibility with the original model
-        embeddings = [features]
         
         # Make sure logits are contiguous
         logits = logits.contiguous()
         
         return {
             'logits': logits,
-            'embeddings': embeddings,
+            'embeddings': [features],
             'transition_embeddings': []
         }
 
-def get_model(config):
+def get_lite_model(config):
     """
-    Create and initialize the event segmentation model.
+    Create and initialize the lite event segmentation model.
     
     Args:
         config: Model configuration
@@ -116,7 +103,7 @@ def get_model(config):
     Returns:
         Initialized model
     """
-    model = EventSegmentationModel(config)
+    model = LiteEventSegmentationModel(config)
     
     # Initialize model weights
     for m in model.modules():
