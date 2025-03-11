@@ -13,6 +13,8 @@ def parse_args():
                         help='Path to configuration file')
     parser.add_argument('--data_path', type=str, default=None,
                         help='Path to dataset (overrides config)')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Force using CPU even if MPS/CUDA is available')
     
     # Train-specific arguments
     parser.add_argument('--resume', type=str, default=None,
@@ -40,6 +42,9 @@ def train(args):
     
     if args.resume:
         cmd.extend(['--resume', args.resume])
+        
+    if args.cpu:
+        cmd.append('--cpu')
     
     subprocess.run(cmd)
 
@@ -61,6 +66,9 @@ def evaluate(args):
         cmd.append('--visualize')
     
     cmd.extend(['--num_samples', str(args.num_samples)])
+    
+    if args.cpu:
+        cmd.append('--cpu')
     
     subprocess.run(cmd)
 

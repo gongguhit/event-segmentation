@@ -35,6 +35,10 @@ training:
   weight_decay: 0.0001
   lr_scheduler: 'cosine'
   warmup_epochs: 5
+  # Hardware acceleration (auto-detected, use --cpu flag to override)
+  # Apple Silicon (M1/M2/M3) Macs will automatically use MPS backend
+  # Use main.py train --cpu to force CPU usage
+  # Training will automatically use the best available hardware
   # Use Azure OpenAI GPT-4o
   use_gpt4o: false
   # Azure OpenAI settings (only if use_gpt4o is true)

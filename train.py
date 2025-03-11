@@ -14,6 +14,7 @@ from data.mvsec_dataset import get_mvsec_dataloaders
 from models.event_segmentation_model import get_model
 from utils.logger import setup_logger
 from utils.metrics import compute_metrics
+from utils.device_utils import get_device, to_device, mps_fix_for_training
 
 # Optional GPT-4 integration
 try:
@@ -30,6 +31,8 @@ def parse_args():
                         help='Path to checkpoint to resume from')
     parser.add_argument('--data_path', type=str, default=None,
                         help='Path to dataset (overrides config)')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Force using CPU even if MPS/CUDA is available')
     return parser.parse_args()
 
 def get_lr_scheduler(optimizer, config, num_epochs):
@@ -76,9 +79,10 @@ def train_epoch(model, train_loader, optimizer, device, epoch, config, logger, w
     
     for i, batch in pbar:
         # Move data to device
-        events = batch['events'].to(device)
-        images = batch['image'].to(device)
-        targets = batch['segmentation'].to(device)
+        batch = to_device(batch, device)
+        events = batch['events']
+        images = batch['image']
+        targets = batch['segmentation']
         
         # Zero the parameter gradients
         optimizer.zero_grad()
@@ -138,9 +142,10 @@ def validate(model, val_loader, device, epoch, config, logger, writer):
     with torch.no_grad():
         for batch in tqdm(val_loader, desc="Validation"):
             # Move data to device
-            events = batch['events'].to(device)
-            images = batch['image'].to(device)
-            targets = batch['segmentation'].to(device)
+            batch = to_device(batch, device)
+            events = batch['events']
+            images = batch['image']
+            targets = batch['segmentation']
             
             # Forward pass
             outputs = model(events)
@@ -267,8 +272,16 @@ def main():
     writer = SummaryWriter(log_dir=str(save_dir / 'tensorboard'))
     
     # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    if args.cpu:
+        device = torch.device('cpu')
+        logger.info("Forcing CPU usage as requested")
+    else:
+        device = get_device(logger)
+    
+    # Apply MPS-specific fixes if needed
+    if device.type == 'mps':
+        mps_fix_for_training()
+        logger.info("Applied MPS-specific optimizations for Apple Silicon")
     
     # Create data loaders
     logger.info("Creating data loaders...")
@@ -297,9 +310,17 @@ def main():
     
     if args.resume:
         logger.info(f"Resuming from checkpoint: {args.resume}")
-        checkpoint = torch.load(args.resume)
+        # Load checkpoint to CPU first to prevent GPU OOM errors
+        checkpoint = torch.load(args.resume, map_location='cpu')
         model.load_state_dict(checkpoint['model_state_dict'])
+        # Move model to the selected device
+        model = model.to(device)
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        # Move optimizer states to the selected device
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
         start_epoch = checkpoint['epoch'] + 1
         best_val_loss = checkpoint.get('loss', float('inf'))
         logger.info(f"Resumed from epoch {start_epoch}")

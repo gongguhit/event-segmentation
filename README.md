@@ -51,6 +51,27 @@ python check_dataset.py --data_path ./data/mvsec
 
 This will visualize a few random samples and save them to the `dataset_check` directory.
 
+## Hardware Acceleration Support
+
+The model automatically selects the best available hardware for acceleration:
+
+1. **Apple Silicon (M1/M2/M3)**: Automatically uses Metal Performance Shaders (MPS) backend
+2. **NVIDIA GPUs**: Uses CUDA acceleration if available
+3. **CPU**: Falls back to CPU if neither MPS nor CUDA is available
+
+To force CPU usage even when hardware acceleration is available (useful for debugging):
+```bash
+python main.py train --cpu
+```
+
+### Apple Silicon Optimization
+
+On MacBook Pro with M3 Max and other Apple Silicon devices:
+- MPS acceleration is automatically enabled
+- Custom optimizations ensure compatibility with PyTorch's MPS backend
+- Some operations that are not fully supported by MPS will safely fall back to CPU
+- Environment variables are set for optimal performance
+
 ## Usage
 
 1. Train the model:

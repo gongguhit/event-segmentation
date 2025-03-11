@@ -12,6 +12,7 @@ from data.mvsec_dataset import get_mvsec_dataloaders
 from models.event_segmentation_model import get_model
 from utils.logger import setup_logger
 from utils.metrics import compute_metrics
+from utils.device_utils import get_device, to_device, mps_fix_for_training
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Evaluate event segmentation model')
@@ -27,26 +28,33 @@ def parse_args():
                         help='Visualize predictions')
     parser.add_argument('--num_samples', type=int, default=10,
                         help='Number of samples to visualize')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Force using CPU even if MPS/CUDA is available')
     return parser.parse_args()
 
 def visualize_prediction(events, pred, target, idx, output_dir):
     """
     Visualize model prediction and save to file.
     """
+    # Move tensors to CPU for visualization
+    events = events.cpu()
+    pred = pred.cpu()
+    target = target.cpu()
+    
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     
     # Event representation (take mean across time bins if voxel grid)
     if events.shape[0] > 3:  # More than 3 channels (probably voxel grid)
-        event_vis = events.mean(dim=0).cpu().numpy()
+        event_vis = events.mean(dim=0).numpy()
     else:
         # Combine positive and negative events for visualization
-        event_vis = events[0].cpu().numpy() - events[1].cpu().numpy() if events.shape[0] > 1 else events[0].cpu().numpy()
+        event_vis = events[0].numpy() - events[1].numpy() if events.shape[0] > 1 else events[0].numpy()
     
     # Normalize for visualization
     event_vis = (event_vis - event_vis.min()) / (event_vis.max() - event_vis.min() + 1e-6)
     
-    pred = pred.argmax(dim=0).cpu().numpy()
-    target = target.cpu().numpy()
+    pred = pred.argmax(dim=0).numpy()
+    target = target.numpy()
     
     # Plot
     axes[0].imshow(event_vis, cmap='gray')
@@ -87,9 +95,10 @@ def evaluate(model, val_loader, device, output_dir, visualize=False, num_samples
     with torch.no_grad():
         for batch_idx, batch in enumerate(tqdm(val_loader, desc="Evaluating")):
             # Move data to device
-            events = batch['events'].to(device)
-            images = batch['image'].to(device)
-            targets = batch['segmentation'].to(device)
+            batch = to_device(batch, device)
+            events = batch['events']
+            images = batch['image']
+            targets = batch['segmentation']
             
             # Forward pass
             outputs = model(events)
@@ -140,8 +149,16 @@ def main():
     logger.info(f"Checkpoint: {args.checkpoint}")
     
     # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    if args.cpu:
+        device = torch.device('cpu')
+        logger.info("Forcing CPU usage as requested")
+    else:
+        device = get_device(logger)
+    
+    # Apply MPS-specific fixes if needed
+    if device.type == 'mps':
+        mps_fix_for_training()
+        logger.info("Applied MPS-specific optimizations for Apple Silicon")
     
     # Create data loaders (only validation needed)
     logger.info("Creating data loader...")
@@ -151,8 +168,10 @@ def main():
     # Create and load model
     logger.info("Loading model...")
     model = get_model(config)
-    checkpoint = torch.load(args.checkpoint, map_location=device)
+    # Load checkpoint to CPU first to prevent GPU OOM errors
+    checkpoint = torch.load(args.checkpoint, map_location='cpu')
     model.load_state_dict(checkpoint['model_state_dict'])
+    # Move model to the selected device
     model = model.to(device)
     logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
     
