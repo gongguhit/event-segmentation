@@ -10,6 +10,7 @@ from pathlib import Path
 
 from data.mvsec_dataset import get_mvsec_dataloaders
 from models.event_segmentation_model import get_model
+from models.lite_model import get_lite_model
 from utils.logger import setup_logger
 from utils.metrics import compute_metrics
 from utils.device_utils import get_device, to_device, mps_fix_for_training
@@ -30,6 +31,10 @@ def parse_args():
                         help='Number of samples to visualize')
     parser.add_argument('--cpu', action='store_true',
                         help='Force using CPU even if MPS/CUDA is available')
+    parser.add_argument('--max_batches', type=int, default=None,
+                        help='Maximum number of batches to evaluate (for quick testing)')
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Override batch size from config')
     return parser.parse_args()
 
 def visualize_prediction(events, pred, target, idx, output_dir):
@@ -75,12 +80,19 @@ def visualize_prediction(events, pred, target, idx, output_dir):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-def evaluate(model, val_loader, device, output_dir, visualize=False, num_samples=10):
+def evaluate(model, val_loader, device, output_dir, visualize=False, num_samples=10, max_batches=None, logger=None):
     """
     Evaluate the model on the validation set.
     """
+    # Make sure model is in evaluation mode and on the correct device
     model.eval()
-    metrics_dict = {'iou': [], 'accuracy': [], 'precision': [], 'recall': []}
+    model = model.to(device)
+    if logger:
+        logger.info(f"Running evaluation on {device}")
+    else:
+        print(f"Running evaluation on {device}")
+    
+    metrics_dict = {'iou': [], 'accuracy': [], 'precision': [], 'recall': [], 'f1': []}
     
     # Create directory for visualizations
     vis_dir = os.path.join(output_dir, 'visualizations')
@@ -88,12 +100,12 @@ def evaluate(model, val_loader, device, output_dir, visualize=False, num_samples
         os.makedirs(vis_dir, exist_ok=True)
     
     # Sample indices for visualization
-    num_batches = len(val_loader)
+    num_batches = min(len(val_loader), max_batches) if max_batches else len(val_loader)
     vis_batch_indices = np.random.choice(num_batches, min(num_samples, num_batches), replace=False)
     vis_count = 0
     
     with torch.no_grad():
-        for batch_idx, batch in enumerate(tqdm(val_loader, desc="Evaluating")):
+        for batch_idx, batch in enumerate(tqdm(val_loader, desc="Evaluating", total=num_batches)):
             # Move data to device
             batch = to_device(batch, device)
             events = batch['events']
@@ -116,6 +128,9 @@ def evaluate(model, val_loader, device, output_dir, visualize=False, num_samples
                         f"{batch_idx}_{i}", vis_dir
                     )
                     vis_count += 1
+            
+            if max_batches and batch_idx >= max_batches:
+                break
     
     # Compute average metrics
     results = {}
@@ -139,6 +154,10 @@ def main():
     if args.data_path:
         config['data']['data_path'] = args.data_path
     
+    # Override batch size if provided
+    if args.batch_size:
+        config['data']['batch_size'] = args.batch_size
+        
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -167,19 +186,68 @@ def main():
     
     # Create and load model
     logger.info("Loading model...")
-    model = get_model(config)
-    # Load checkpoint to CPU first to prevent GPU OOM errors
-    checkpoint = torch.load(args.checkpoint, map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # First determine the device
+    if args.cpu:
+        load_device = torch.device('cpu')
+    else:
+        # For MPS/CUDA, first load to CPU to avoid memory issues, then move to device
+        load_device = torch.device('cpu')
+    
+    # Load checkpoint 
+    logger.info(f"Loading checkpoint to {load_device} first...")
+    try:
+        # Try to load with weights_only=True for security
+        checkpoint = torch.load(args.checkpoint, map_location=load_device, weights_only=True)
+        logger.info("Loaded checkpoint with weights_only=True")
+    except TypeError:
+        # Fallback for older PyTorch versions that don't support weights_only
+        logger.warning("Your PyTorch version doesn't support weights_only parameter. Loading checkpoint in legacy mode.")
+        checkpoint = torch.load(args.checkpoint, map_location=load_device)
+    except Exception as e:
+        logger.error(f"Error loading checkpoint: {e}")
+        # Try with traditional loading
+        checkpoint = torch.load(args.checkpoint, map_location=load_device)
+    
+    # Use the config from the checkpoint instead of the current config file
+    # First, save data paths from current config
+    data_path = config['data']['data_path']
+    batch_size = config['data']['batch_size']
+    
+    # If 'config' is in the checkpoint, use it
+    if 'config' in checkpoint:
+        config = checkpoint['config']
+        logger.info("Using model configuration from checkpoint")
+        # Restore the data path and batch size from the current config
+        config['data']['data_path'] = data_path
+        config['data']['batch_size'] = batch_size
+    else:
+        logger.info("Checkpoint does not contain model configuration, using current config")
+    
+    # Now create the model with the correct configuration
+    if 'lite' in args.checkpoint:
+        logger.info("Using lite model architecture")
+        model = get_lite_model(config)
+    else:
+        model = get_model(config)
+    
+    # Load state dict
+    model.load_state_dict(checkpoint['model'])
+    
     # Move model to the selected device
     model = model.to(device)
+    logger.info(f"Model successfully moved to {device}")
     logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
     
     # Evaluate model
     logger.info("Starting evaluation...")
+    if args.max_batches:
+        logger.info(f"Limiting evaluation to {args.max_batches} batches for quick testing")
+    
     results = evaluate(
         model, val_loader, device, output_dir,
-        visualize=args.visualize, num_samples=args.num_samples
+        visualize=args.visualize, num_samples=args.num_samples,
+        max_batches=args.max_batches, logger=logger
     )
     
     # Log results

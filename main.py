@@ -31,6 +31,10 @@ def parse_args():
                         help='Visualize predictions (for evaluation)')
     parser.add_argument('--num_samples', type=int, default=10,
                         help='Number of samples to visualize (for evaluation)')
+    parser.add_argument('--max_batches', type=int, default=None,
+                        help='Maximum number of batches to evaluate (for quick testing)')
+    parser.add_argument('--batch_size', type=int, default=None,
+                        help='Override batch size from config')
     
     return parser.parse_args()
 
@@ -76,6 +80,12 @@ def evaluate(args):
         cmd.append('--visualize')
     
     cmd.extend(['--num_samples', str(args.num_samples)])
+    
+    if args.max_batches:
+        cmd.extend(['--max_batches', str(args.max_batches)])
+    
+    if args.batch_size:
+        cmd.extend(['--batch_size', str(args.batch_size)])
     
     if args.cpu:
         cmd.append('--cpu')
