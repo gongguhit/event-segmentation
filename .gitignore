@@ -85,6 +85,7 @@ results/
 *.pth
 *.h5
 *.hdf5
+*.aedat4
 
 # MVSEC specific
 *.hdf5
